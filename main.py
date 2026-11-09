@@ -5,7 +5,7 @@
     WASD  — движение
     Мышь  — прицеливание
     ЛКМ   — стрельба (можно зажать)
-    ESC   — пауза
+    ESC/P — пауза (в игре: ESC — продолжить, R — заново, Q — в меню)
     SPACE — начать игру / рестарт
     1/2/3 — выбор улучшения после босса
 
@@ -13,6 +13,7 @@
 Каждые 5 волн появляется босс.
 """
 
+import json
 import math
 import random
 from array import array
@@ -106,6 +107,28 @@ UPGRADE_SPEED_MULT     = 1.08
 UPGRADE_MAX_PIERCE     = 3
 UPGRADE_REGEN_AMOUNT   = 1.0
 UPGRADE_VAMPIRE_AMOUNT = 2
+
+# Рекорды (сохраняются между запусками игры)
+HIGHSCORE_FILE = "highscore.json"
+
+
+def load_highscore():
+    """Возвращает (лучший счёт, лучшие убийства) из файла рекордов."""
+    try:
+        with open(HIGHSCORE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return int(data.get("score", 0)), int(data.get("kills", 0))
+    except (OSError, ValueError, TypeError):
+        return 0, 0
+
+
+def save_highscore(score, kills):
+    """Сохраняет рекорды в файл. Ошибки записи не ломают игру."""
+    try:
+        with open(HIGHSCORE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"score": score, "kills": kills}, f, ensure_ascii=False)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +642,7 @@ class Background:
 # ---------------------------------------------------------------------------
 # Интерфейс
 # ---------------------------------------------------------------------------
-def draw_hud(screen, fonts, player, score, wave, kills):
+def draw_hud(screen, fonts, player, score, wave, kills, best_score=0):
     # здоровье
     bar_w, bar_h = 320, 22
     x, y = 24, 24
@@ -631,6 +654,10 @@ def draw_hud(screen, fonts, player, score, wave, kills):
     hp_text = fonts["small"].render(f"ЗДОРОВЬЕ: {player.hp}/{player.max_hp}",
                                     True, TEXT_COLOR)
     screen.blit(hp_text, (x + 4, y + 2))
+
+    # рекорд (центр сверху)
+    record_text = fonts["small"].render(f"РЕКОРД: {best_score}", True, (170, 175, 190))
+    screen.blit(record_text, record_text.get_rect(center=(WIDTH // 2, 14)))
 
     # активные бафы
     active = []
@@ -720,6 +747,7 @@ class Game:
         self.buffs = []
         self.upgrade_options = []
         self.upgrade_rects = []
+        self.best_score, self.best_kills = load_highscore()
 
     # -------------------------------------------------------------- ресурсы
     def reset(self):
@@ -735,6 +763,7 @@ class Game:
         self.buff_spawn_timer = 3.0   # первый баф через 3 секунды
         self.upgrade_options = []
         self.upgrade_rects = []
+        self.new_record = False
         pygame.mouse.set_pos(WIDTH // 2, HEIGHT // 2)
 
     # -------------------------------------------------------------- ввод
@@ -744,7 +773,7 @@ class Game:
                 return False
 
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+                if event.key in (pygame.K_ESCAPE, pygame.K_p):
                     if self.state == "playing":
                         self.state = "paused"
                     elif self.state == "paused":
@@ -761,8 +790,15 @@ class Game:
                     elif event.key == pygame.K_ESCAPE:
                         self.state = "menu"
 
-                elif self.state == "paused" and event.key in (pygame.K_r, pygame.K_SPACE):
+                elif self.state == "paused" and event.key == pygame.K_r:
+                    self.reset()
                     self.state = "playing"
+
+                elif self.state == "paused" and event.key == pygame.K_SPACE:
+                    self.state = "playing"
+
+                elif self.state == "paused" and event.key == pygame.K_q:
+                    self.state = "menu"
 
                 elif self.state == "upgrading" and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
                     self._choose_upgrade({pygame.K_1: 0, pygame.K_2: 1,
@@ -850,8 +886,18 @@ class Game:
             self.state = "gameover"
             spawn_explosion(self.player.pos.x, self.player.pos.y,
                             self.particles, PLAYER_COLOR, 40)
+            self._save_highscore()
 
         self.shake = max(0.0, self.shake - dt)
+
+    # -------------------------------------------------------------- рекорд
+    def _save_highscore(self):
+        """Обновляет и сохраняет рекорд (счёт/убийства) при проигрыше."""
+        if self.score > self.best_score or self.kills > self.best_kills:
+            self.new_record = True
+        self.best_score = max(self.best_score, self.score)
+        self.best_kills = max(self.best_kills, self.kills)
+        save_highscore(self.best_score, self.best_kills)
 
     # -------------------------------------------------------------- бафы
     def _update_buffs(self, dt):
@@ -955,6 +1001,33 @@ class Game:
                 self.screen.blit(line_s, line_s.get_rect(center=(rect.centerx, ty)))
                 ty += 26
 
+    def draw_pause_screen(self):
+        """Экран паузы: ESC/P — продолжить, R — заново, Q — в меню."""
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+
+        panel = pygame.Rect(0, 0, 480, 380)
+        panel.center = (WIDTH // 2, HEIGHT // 2)
+        pygame.draw.rect(self.screen, (28, 31, 40), panel, border_radius=16)
+        pygame.draw.rect(self.screen, (95, 105, 125), panel, 3, border_radius=16)
+
+        title = self.fonts["title"].render("ПАУЗА", True, TEXT_COLOR)
+        self.screen.blit(title, title.get_rect(center=(WIDTH // 2, panel.y + 62)))
+        sub = self.fonts["small"].render("Игра приостановлена", True, (170, 175, 190))
+        self.screen.blit(sub, sub.get_rect(center=(WIDTH // 2, panel.y + 112)))
+        stats = self.fonts["hud"].render(
+            f"Счёт: {self.score}    |    Волна: {self.waves.wave}    |    Убито: {self.kills}",
+            True, (150, 155, 175))
+        self.screen.blit(stats, stats.get_rect(center=(WIDTH // 2, panel.y + 162)))
+
+        lines = ["ESC или P — продолжить", "R — начать заново", "Q — в главное меню"]
+        ty = panel.y + 225
+        for line in lines:
+            s = self.fonts["big"].render(line, True, (205, 210, 225))
+            self.screen.blit(s, s.get_rect(center=(WIDTH // 2, ty)))
+            ty += 46
+
     # -------------------------------------------------------------- отрисовка
     def draw(self):
         shake_x = random.uniform(-1, 1) * 6 * (self.shake > 0)
@@ -973,7 +1046,7 @@ class Game:
                 buff.draw(self.screen, self.fonts["hud"])
             self.player.draw(self.screen)
             draw_hud(self.screen, self.fonts, self.player,
-                     self.score, self.waves.wave, self.kills)
+                     self.score, self.waves.wave, self.kills, self.best_score)
             if self.state == "playing":
                 self.waves.draw_boss_alert(self.screen, self.fonts["big"])
 
@@ -983,6 +1056,10 @@ class Game:
                 "2D ШУТЕР",
                 "SPACE — начать игру\nWASD — движение, ЛКМ — огонь",
             )
+            record = self.fonts["hud"].render(
+                f"РЕКОРД: {self.best_score} очков   |   Убито: {self.best_kills}",
+                True, (255, 215, 120))
+            self.screen.blit(record, record.get_rect(center=(WIDTH // 2, 120)))
             hints = [
                 "Уничтожай врагов, переживи как можно больше волн.",
                 "Собирай бафы: аптечка, скорострельность, ускорение, урон, щит.",
@@ -994,8 +1071,7 @@ class Game:
                 self.screen.blit(s, s.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 60 + i * 30)))
 
         elif self.state == "paused":
-            draw_center_message(self.screen, self.fonts,
-                                "ПАУЗА", "ESC — продолжить, R — заново")
+            self.draw_pause_screen()
 
         elif self.state == "gameover":
             draw_center_message(
@@ -1003,9 +1079,18 @@ class Game:
                 "ИГРА ОКОНЧЕНА",
                 f"Счёт: {self.score}   |   Волна: {self.waves.wave}   |   Убито: {self.kills}",
             )
+            y0 = HEIGHT // 2 + 50
+            if self.new_record:
+                rec = self.fonts["big"].render("НОВЫЙ РЕКОРД!", True, (255, 215, 120))
+                self.screen.blit(rec, rec.get_rect(center=(WIDTH // 2, y0)))
+                y0 += 45
+            rec_line = self.fonts["small"].render(
+                f"Лучший результат: {self.best_score} очков | убито: {self.best_kills}",
+                True, (170, 175, 190))
+            self.screen.blit(rec_line, rec_line.get_rect(center=(WIDTH // 2, y0)))
             hint = self.fonts["big"].render("R — сыграть ещё раз   ESC — в меню",
                                             True, (150, 155, 175))
-            self.screen.blit(hint, hint.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 70)))
+            self.screen.blit(hint, hint.get_rect(center=(WIDTH // 2, y0 + 55)))
 
         elif self.state == "upgrading":
             self.draw_upgrade_screen()
