@@ -7,6 +7,7 @@
     ЛКМ   — стрельба (можно зажать)
     ESC/P — пауза (в игре: ESC — продолжить, R — заново, Q — в меню)
     SPACE — начать игру / рестарт
+    S     — настройки (выбор фона карты)
     1/2/3 — выбор улучшения после босса
 
 Враги появляются волнами, с каждой волной становятся сильнее.
@@ -127,6 +128,29 @@ def save_highscore(score, kills):
     try:
         with open(HIGHSCORE_FILE, "w", encoding="utf-8") as f:
             json.dump({"score": score, "kills": kills}, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+# Настройки (фон карты) — сохраняются между запусками игры
+SETTINGS_FILE = "settings.json"
+BACKGROUND_KINDS = ["grid", "asphalt", "meadow"]
+BACKGROUND_NAMES = {"grid": "Сетка", "asphalt": "Асфальт", "meadow": "Поляна"}
+
+
+def load_background_kind():
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            kind = json.load(f).get("background", "grid")
+        return kind if kind in BACKGROUND_KINDS else "grid"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return "grid"
+
+
+def save_background_kind(kind):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"background": kind}, f, ensure_ascii=False)
     except OSError:
         pass
 
@@ -626,14 +650,137 @@ class WaveManager:
 # ---------------------------------------------------------------------------
 # Отрисовка фона
 # ---------------------------------------------------------------------------
+def _build_grid_surface():
+    """Текущий фон: тёмное поле с сеткой."""
+    surf = pygame.Surface((WIDTH, HEIGHT))
+    surf.fill(BG_COLOR)
+    for x in range(0, WIDTH, 48):
+        pygame.draw.line(surf, GRID_COLOR, (x, 0), (x, HEIGHT))
+    for y in range(0, HEIGHT, 48):
+        pygame.draw.line(surf, GRID_COLOR, (0, y), (WIDTH, y))
+    return surf
+
+
+def _build_asphalt_surface():
+    """Асфальт: серое поле с редкими, просторно расставленными деталями."""
+    rng = random.Random(11)   # фиксированный seed — фон одинаков между запусками
+    surf = pygame.Surface((WIDTH, HEIGHT))
+    surf.fill((46, 49, 53))
+    # мелкозернистый шум
+    for _ in range(2400):
+        x = rng.randrange(WIDTH)
+        y = rng.randrange(HEIGHT)
+        s = rng.randint(-7, 7)
+        surf.set_at((x, y), (46 + s, 49 + s, 53 + s))
+    # выцветшие пятна износа
+    for _ in range(5):
+        x, y = rng.randint(80, WIDTH - 260), rng.randint(80, HEIGHT - 180)
+        w, h = rng.randint(120, 220), rng.randint(70, 110)
+        pygame.draw.ellipse(surf, (52, 55, 59), (x, y, w, h))
+    # тёмные заплатки
+    for _ in range(4):
+        x, y = rng.randint(60, WIDTH - 240), rng.randint(60, HEIGHT - 170)
+        w, h = rng.randint(90, 160), rng.randint(50, 90)
+        pygame.draw.ellipse(surf, (40, 43, 47), (x, y, w, h))
+    # масляные пятна
+    for _ in range(3):
+        x, y = rng.randint(160, WIDTH - 160), rng.randint(130, HEIGHT - 130)
+        r = rng.randint(22, 40)
+        pygame.draw.circle(surf, (38, 40, 44), (x, y), r)
+        pygame.draw.circle(surf, (42, 44, 48), (x, y), r - 6)
+    # тонкие трещины
+    for _ in range(6):
+        x, y = rng.randint(100, WIDTH - 200), rng.randint(80, HEIGHT - 160)
+        pts = [(x, y)]
+        for _ in range(rng.randint(3, 5)):
+            x += rng.randint(-70, 70)
+            y += rng.randint(30, 90)
+            pts.append((x, y))
+        pygame.draw.lines(surf, (33, 35, 39), False, pts, 2)
+    # люк
+    mx, my = 980, 545
+    pygame.draw.circle(surf, (56, 59, 63), (mx, my), 34)
+    pygame.draw.circle(surf, (50, 53, 57), (mx, my), 28)
+    pygame.draw.circle(surf, (60, 63, 67), (mx, my), 34, 3)
+    # выцветшая прерывистая разметка (выше центра, чтобы не мешала обзору)
+    for x in range(60, WIDTH - 60, 90):
+        pygame.draw.line(surf, (92, 95, 99),
+                         (x, HEIGHT // 3), (x + 45, HEIGHT // 3), 3)
+    return surf
+
+
+def _build_meadow_surface():
+    """Поляна: трава с редкими цветами, кустами, камнями и тропинкой."""
+    rng = random.Random(23)   # фиксированный seed — фон одинаков между запусками
+    surf = pygame.Surface((WIDTH, HEIGHT))
+    surf.fill((58, 88, 54))
+    # шум травы
+    for _ in range(3000):
+        x = rng.randrange(WIDTH)
+        y = rng.randrange(HEIGHT)
+        s = rng.randint(-8, 8)
+        surf.set_at((x, y), (58 + s, 88 + s, 54 + s))
+    # пятна более светлой/тёмной травы
+    for _ in range(6):
+        x, y = rng.randint(60, WIDTH - 300), rng.randint(60, HEIGHT - 200)
+        w, h = rng.randint(140, 260), rng.randint(80, 140)
+        color = (64, 96, 60) if rng.random() < 0.5 else (50, 78, 47)
+        pygame.draw.ellipse(surf, color, (x, y, w, h))
+    # кустики травы (короткие штрихи)
+    for _ in range(70):
+        x, y = rng.randint(30, WIDTH - 30), rng.randint(30, HEIGHT - 30)
+        for _ in range(3):
+            dx = rng.randint(-3, 3)
+            pygame.draw.line(surf, (70, 104, 64), (x + dx, y),
+                             (x + dx + rng.randint(-2, 2),
+                              y - rng.randint(4, 8)), 1)
+    # цветы — редкие яркие точки
+    flower_colors = [(230, 220, 90), (235, 235, 240), (220, 120, 170)]
+    for _ in range(24):
+        x, y = rng.randint(40, WIDTH - 40), rng.randint(40, HEIGHT - 40)
+        c = rng.choice(flower_colors)
+        pygame.draw.circle(surf, c, (x, y), 2)
+        pygame.draw.circle(surf, (240, 250, 200), (x, y), 1)
+    # вытоптанная тропинка (цепочка светлых пятен через карту)
+    path_x, path_y = -40, HEIGHT - 150
+    while path_x < WIDTH + 40:
+        w = rng.randint(50, 80)
+        h = rng.randint(24, 40)
+        pygame.draw.ellipse(surf, (96, 84, 62), (path_x, path_y, w, h))
+        path_x += w - rng.randint(6, 14)
+        path_y += rng.randint(-18, 18)
+    # камни
+    for _ in range(5):
+        x, y = rng.randint(80, WIDTH - 80), rng.randint(80, HEIGHT - 80)
+        r = rng.randint(6, 11)
+        pygame.draw.circle(surf, (108, 108, 100), (x, y), r)
+        pygame.draw.circle(surf, (92, 92, 86), (x - 1, y - 1), r - 2)
+    # пара кустов по краям
+    for bx, by in ((170, 570), (1100, 150)):
+        for _ in range(7):
+            ox, oy = rng.randint(-16, 16), rng.randint(-12, 12)
+            pygame.draw.circle(surf, (44, 70, 42),
+                               (bx + ox, by + oy), rng.randint(10, 16))
+    return surf
+
+
 class Background:
-    def __init__(self):
-        self.surface = pygame.Surface((WIDTH, HEIGHT))
-        self.surface.fill(BG_COLOR)
-        for x in range(0, WIDTH, 48):
-            pygame.draw.line(self.surface, GRID_COLOR, (x, 0), (x, HEIGHT))
-        for y in range(0, HEIGHT, 48):
-            pygame.draw.line(self.surface, GRID_COLOR, (0, y), (WIDTH, y))
+    def __init__(self, kind="grid"):
+        self.kind = kind
+        self.surface = self._build(kind)
+
+    @staticmethod
+    def _build(kind):
+        if kind == "asphalt":
+            return _build_asphalt_surface()
+        if kind == "meadow":
+            return _build_meadow_surface()
+        return _build_grid_surface()
+
+    def set_kind(self, kind):
+        if kind in BACKGROUND_KINDS and kind != self.kind:
+            self.kind = kind
+            self.surface = self._build(kind)
 
     def draw(self, screen, offset=0):
         screen.blit(self.surface, (offset, 0))
@@ -736,7 +883,9 @@ class Game:
             "big": pygame.font.SysFont("Arial", 40),
             "title": pygame.font.SysFont("Arial", 72, bold=True),
         }
-        self.background = Background()
+        self.background_kind = load_background_kind()
+        self.background = Background(self.background_kind)
+        self._preview_cache = None
         self.state = "menu"     # menu / playing / paused / gameover
         # атрибуты, заполняемые в reset(), с дефолтами для меню
         self.score = 0
@@ -766,6 +915,17 @@ class Game:
         self.new_record = False
         pygame.mouse.set_pos(WIDTH // 2, HEIGHT // 2)
 
+    # -------------------------------------------------------------- настройки
+    def _set_background(self, kind):
+        self.background.set_kind(kind)
+        self.background_kind = kind
+        save_background_kind(kind)
+
+    def _cycle_background(self, direction):
+        idx = BACKGROUND_KINDS.index(self.background.kind)
+        self._set_background(
+            BACKGROUND_KINDS[(idx + direction) % len(BACKGROUND_KINDS)])
+
     # -------------------------------------------------------------- ввод
     def handle_events(self):
         for event in pygame.event.get():
@@ -782,6 +942,9 @@ class Game:
                 if self.state == "menu" and event.key == pygame.K_SPACE:
                     self.reset()
                     self.state = "playing"
+
+                elif self.state == "menu" and event.key == pygame.K_s:
+                    self.state = "settings"
 
                 elif self.state == "gameover":
                     if event.key in (pygame.K_r, pygame.K_SPACE):
@@ -803,6 +966,20 @@ class Game:
                 elif self.state == "upgrading" and event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
                     self._choose_upgrade({pygame.K_1: 0, pygame.K_2: 1,
                                           pygame.K_3: 2}[event.key])
+
+                elif self.state == "settings":
+                    if event.key in (pygame.K_ESCAPE, pygame.K_s, pygame.K_RETURN):
+                        self.state = "menu"
+                    elif event.key in (pygame.K_LEFT, pygame.K_a):
+                        self._cycle_background(-1)
+                    elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                        self._cycle_background(1)
+                    elif event.key == pygame.K_1:
+                        self._set_background("grid")
+                    elif event.key == pygame.K_2:
+                        self._set_background("asphalt")
+                    elif event.key == pygame.K_3:
+                        self._set_background("meadow")
 
             if self.state == "upgrading" and event.type == pygame.MOUSEBUTTONDOWN \
                     and event.button == 1:
@@ -1001,6 +1178,52 @@ class Game:
                 self.screen.blit(line_s, line_s.get_rect(center=(rect.centerx, ty)))
                 ty += 26
 
+    def draw_settings_screen(self):
+        """Экран настроек: выбор фона карты."""
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 170))
+        self.screen.blit(overlay, (0, 0))
+
+        title = self.fonts["title"].render("НАСТРОЙКИ", True, TEXT_COLOR)
+        self.screen.blit(title, title.get_rect(center=(WIDTH // 2, 120)))
+        sub = self.fonts["small"].render(
+            "Фон карты — выберите стрелками ←/→ или клавишами 1/2/3",
+            True, (170, 175, 190))
+        self.screen.blit(sub, sub.get_rect(center=(WIDTH // 2, 175)))
+
+        card_w, card_h, gap = 270, 200, 50
+        total = card_w * len(BACKGROUND_KINDS) + gap * (len(BACKGROUND_KINDS) - 1)
+        x0 = (WIDTH - total) // 2
+        y0 = 240
+
+        # превью строим один раз и кэшируем
+        if self._preview_cache is None:
+            self._preview_cache = {}
+            for kind in BACKGROUND_KINDS:
+                full = Background._build(kind)
+                self._preview_cache[kind] = pygame.transform.smoothscale(
+                    full, (card_w - 30, card_h - 70))
+
+        for i, kind in enumerate(BACKGROUND_KINDS):
+            selected = kind == self.background.kind
+            rect = pygame.Rect(x0 + i * (card_w + gap), y0, card_w, card_h)
+            pygame.draw.rect(self.screen, (30, 34, 44), rect, border_radius=14)
+            border = (255, 215, 0) if selected else (95, 105, 125)
+            pygame.draw.rect(self.screen, border, rect, 3, border_radius=14)
+            preview = self._preview_cache[kind]
+            self.screen.blit(preview, preview.get_rect(
+                center=(rect.centerx, rect.y + 18 + (card_h - 70) // 2)))
+            name = self.fonts["hud"].render(
+                BACKGROUND_NAMES[kind],
+                True, (255, 215, 0) if selected else TEXT_COLOR)
+            self.screen.blit(name, name.get_rect(center=(rect.centerx,
+                                                         rect.bottom - 26)))
+
+        hint = self.fonts["small"].render("ESC / S — назад в меню",
+                                          True, (150, 155, 175))
+        self.screen.blit(hint, hint.get_rect(center=(WIDTH // 2,
+                                                     y0 + card_h + 60)))
+
     def draw_pause_screen(self):
         """Экран паузы: ESC/P — продолжить, R — заново, Q — в меню."""
         overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -1065,6 +1288,7 @@ class Game:
                 "Собирай бафы: аптечка, скорострельность, ускорение, урон, щит.",
                 "Победи босса — выбери одно из трёх улучшений!",
                 "Каждые 5 волн появляется босс!",
+                "S — настройки (выбор фона карты).",
             ]
             for i, hint in enumerate(hints):
                 s = self.fonts["small"].render(hint, True, (150, 155, 175))
@@ -1094,6 +1318,9 @@ class Game:
 
         elif self.state == "upgrading":
             self.draw_upgrade_screen()
+
+        elif self.state == "settings":
+            self.draw_settings_screen()
 
         pygame.display.flip()
 
